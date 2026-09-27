@@ -21,6 +21,8 @@ from .models import (
     Source,
 )
 from .providers import LLMClient, PROVIDERS, create_llm_client
+from .relevance import filter_relevant_hits
+from .reporting import ReportValidationError, StructuredReportContent
 from .search import (
     DuckDuckGoSearchProvider,
     SearchProvider,
@@ -55,6 +57,7 @@ class ResearchAgent:
         jev_base_url: str | None = None,
         jev_min_confidence: float | None = None,
         jev_router: JevDecisionRouter | None = None,
+        minimum_source_relevance: float | None = None,
     ) -> None:
         provider_key = provider or os.getenv("LLM_PROVIDER", "openai").lower()
         if provider_key not in PROVIDERS:
@@ -92,6 +95,15 @@ class ResearchAgent:
         )
         configured_workers = int(os.getenv("MAX_PARALLEL_SEARCHES", "4"))
         self.max_parallel_searches = max_parallel_searches or configured_workers
+        try:
+            configured_relevance = float(
+                os.getenv("MIN_SOURCE_RELEVANCE", "0.08")
+                if minimum_source_relevance is None
+                else minimum_source_relevance
+            )
+        except (TypeError, ValueError):
+            configured_relevance = 0.08
+        self.minimum_source_relevance = max(0.0, min(1.0, configured_relevance))
         configured_jev = (
             self._env_flag("JEV_ENABLED") if jev_enabled is None else jev_enabled
         )
@@ -317,6 +329,13 @@ Return ONLY valid JSON:
             f"Searching {len(plan.tasks)} research angles in parallel using the planned sources…",
         )
         results = self._gather_parallel(plan.tasks, progress)
+        candidates_evaluated = sum(result.candidates_evaluated for result in results)
+        candidates_filtered = sum(result.candidates_filtered for result in results)
+        self._notify(
+            progress,
+            f"Quality-scored {candidates_evaluated} candidates and removed "
+            f"{candidates_filtered} irrelevant sources.",
+        )
         sources = deduplicate_sources(
             [source for result in results for source in result.sources]
         )
@@ -326,7 +345,15 @@ Return ONLY valid JSON:
             query, plan, results, sources, history or [], facts
         )
         duration = time.perf_counter() - started_at
-        report = ResearchReport(query, markdown, plan, sources, duration)
+        report = ResearchReport(
+            query=query,
+            markdown=markdown,
+            plan=plan,
+            sources=sources,
+            duration_seconds=duration,
+            candidates_evaluated=candidates_evaluated,
+            candidates_filtered=candidates_filtered,
+        )
         used_backends = ", ".join(
             dict.fromkeys(result.search_backend for result in results if result.search_backend)
         ) or self.search.name
@@ -435,6 +462,8 @@ Return ONLY valid JSON in this exact shape:
                             content=f"Search failed for this angle: {exc}",
                             sources=[],
                             search_backend=self._provider_for_task(task).name,
+                            candidates_evaluated=0,
+                            candidates_filtered=0,
                         )
                     )
         if not any(result.sources for result in results):
@@ -450,20 +479,35 @@ Return ONLY valid JSON in this exact shape:
             max_results=4,
             preferred_domains=task.preferred_domains,
         )
-        sources = [Source(hit.title, hit.url, task.query) for hit in hits]
+        evaluated_hits, filtered_count = filter_relevant_hits(
+            hits,
+            task,
+            minimum_relevance=self.minimum_source_relevance,
+        )
+        sources = [item.source for item in evaluated_hits]
         note_blocks: list[str] = []
-        for index, hit in enumerate(hits, start=1):
+        for index, item in enumerate(evaluated_hits, start=1):
+            hit = item.hit
+            source = item.source
             evidence = hit.content or hit.snippet
             note_blocks.append(
                 f"SOURCE {index}: {hit.title}\nURL: {hit.url}\n"
+                f"QUALITY: relevance={source.relevance_score:.3f}, "
+                f"authority={source.authority_score:.3f}, "
+                f"freshness={source.freshness_score:.3f}, "
+                f"overall={source.quality_score:.3f}\n"
                 f"SEARCH SNIPPET: {hit.snippet}\nEXTRACTED CONTENT: {evidence}"
             )
-        content = "\n\n".join(note_blocks) or "No results were returned for this angle."
+        content = "\n\n".join(note_blocks) or (
+            "All returned candidates were removed by the relevance filter."
+        )
         return SearchResult(
             task=task,
             content=content,
             sources=sources,
             search_backend=provider.name,
+            candidates_evaluated=len(hits),
+            candidates_filtered=filtered_count,
         )
 
     def _available_backend_names(self) -> list[str]:
@@ -498,7 +542,11 @@ Return ONLY valid JSON in this exact shape:
         long_term_facts: list[dict[str, Any]] | None = None,
     ) -> str:
         source_catalog = "\n".join(
-            f"[S{index}] {source.title} — {source.url}"
+            f"[S{index}] {source.title} — {source.url} "
+            f"(relevance={source.relevance_score:.3f}, "
+            f"authority={source.authority_score:.3f}, "
+            f"freshness={source.freshness_score:.3f}, "
+            f"quality={source.quality_score:.3f})"
             for index, source in enumerate(sources, start=1)
         ) or "No source metadata was returned."
         notes = "\n\n".join(
@@ -528,19 +576,51 @@ SOURCE CATALOG
 RESEARCH NOTES
 {notes}
 
-Return Markdown with exactly these top-level sections:
-# Research Summary: <concise title>
-## Executive Summary
-## Key Points
-## Important Findings
-## Actionable Insights
-## Limitations
-## References
+Return ONLY valid JSON with exactly this schema:
+{{
+  "title": "concise report title",
+  "executive_summary": "non-empty summary with [S#] citations",
+  "key_points": ["non-empty point with supporting [S#] citation"],
+  "important_findings": ["non-empty finding with supporting [S#] citation"],
+  "actionable_insights": ["specific action the user can take and why"],
+  "limitations": ["meaningful evidence or scope limitation"],
+  "used_source_ids": ["S1", "S2"]
+}}
 
-Use bullets where helpful. In References, list only sources actually used, with their
-[S#] identifier and title. Do not include a separate preamble or closing message.
+Every field is mandatory. Every list must contain at least one meaningful item. If direct
+action is not applicable, actionable_insights must state what the user should monitor or
+verify next. Include only source IDs that exist in the catalog and were actually used.
 """.strip()
-        return self._link_source_ids(self.llm.generate(prompt).strip(), sources)
+        raw = self.llm.generate(prompt).strip()
+        validation_error = ""
+        structured: StructuredReportContent | None = None
+        for attempt in range(2):
+            try:
+                structured = StructuredReportContent.from_dict(
+                    self._parse_json(raw), len(sources)
+                )
+                break
+            except ReportValidationError as exc:
+                validation_error = str(exc)
+                if attempt == 0:
+                    raw = self.llm.generate(
+                        f"""
+Repair the invalid research-report response below.
+Validation error: {validation_error}
+
+Return ONLY valid JSON using every required field from the original schema. All lists must
+be non-empty, actionable_insights must contain at least one concrete next step, and
+used_source_ids must contain only IDs from S1 through S{len(sources)}.
+
+INVALID RESPONSE
+{raw}
+""".strip()
+                    ).strip()
+        if structured is None:
+            raise RuntimeError(
+                f"The LLM could not produce a valid structured report: {validation_error}"
+            )
+        return self._link_source_ids(structured.to_markdown(sources), sources)
 
     def _chat(
         self, messages: list[dict[str, str]], system_prompt: str | None = None

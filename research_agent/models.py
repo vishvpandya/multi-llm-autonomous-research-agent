@@ -41,8 +41,12 @@ class Source:
     title: str
     url: str
     search_query: str = ""
+    relevance_score: float = 0.0
+    authority_score: float = 0.0
+    freshness_score: float = 0.0
+    quality_score: float = 0.0
 
-    def to_dict(self) -> dict[str, str]:
+    def to_dict(self) -> dict[str, Any]:
         return asdict(self)
 
 
@@ -52,6 +56,8 @@ class SearchResult:
     content: str
     sources: list[Source]
     search_backend: str = ""
+    candidates_evaluated: int = 0
+    candidates_filtered: int = 0
 
 
 @dataclass(slots=True)
@@ -62,6 +68,8 @@ class ResearchReport:
     sources: list[Source]
     duration_seconds: float
     memory_id: int | None = None
+    candidates_evaluated: int = 0
+    candidates_filtered: int = 0
 
 
 @dataclass(slots=True)

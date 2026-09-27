@@ -5,7 +5,7 @@
 
 **Last updated:** 2026-09-27  
 **Workspace:** repository root  
-**Current verified state:** Python compilation passes, 28 automated tests pass, and the
+**Current verified state:** Python compilation passes, 33 automated tests pass, and the
 Streamlit UI smoke test passes.
 
 ## 1. Project goal
@@ -36,9 +36,12 @@ The application is a Streamlit chatbot resembling ChatGPT/Gemini:
 - The sidebar has an optional **Use TypeSafe Jev** toggle and session API-key input. Missing
   credentials do not block the app; the existing LLM router remains active.
 - There is intentionally no visible **Long-term memory** section.
+- There is intentionally no separate **Research history** panel; saved research remains in
+  SQLite and is visible naturally inside persistent chat threads.
 - Long-term memory still operates silently in the background.
 - Research answers include an expandable research-details area showing every task's chosen
-  backend, preferred domains, source types, and rationale, plus Markdown/PDF downloads.
+  backend, preferred domains, source types, rationale, candidate-filter count, and per-source
+  relevance/authority/freshness/quality scores, plus Markdown/PDF downloads.
 - Every assistant answer shows the detected intent, provider/model, web-search state, and
   whether routing used Jev, the LLM router, or the automatic LLM fallback.
 
@@ -88,8 +91,10 @@ Selected intent
     └─ research_request ──────────► autonomous research workflow
 
 Research workflow:
-LLM plan with per-task backend/domain selection → 3–5 parallel searches → page extraction → source deduplication
-→ LLM synthesis → cited report → SQLite + chat message → Markdown/PDF export
+LLM plan with per-task backend/domain selection → 3–5 parallel searches → page extraction
+→ explicit relevance/authority/freshness scoring → irrelevant-source removal → source deduplication
+→ structured LLM synthesis → schema validation/repair → deterministic cited Markdown
+→ SQLite + chat message → Markdown/PDF export
 ```
 
 The five allowed intent values are defined by the router prompt in
@@ -158,12 +163,22 @@ gets the same research capability.
 - Invalid or unavailable LLM backend choices are sanitized to the best configured fallback.
 - Each search task returns at most four sources.
 - Up to `MAX_PARALLEL_SEARCHES` tasks run through `ThreadPoolExecutor`.
+- Every returned candidate is explicitly scored for relevance, authority, freshness, and a
+  weighted overall quality score in `research_agent/relevance.py`.
+- Candidates below `MIN_SOURCE_RELEVANCE` (default `0.08`) are removed before they reach the
+  synthesis prompt. Filtering statistics and retained-source scores are exposed in the UI.
+- Authority scoring prioritizes planned domains, government/academic hosts and documentation
+  sites. Freshness uses provider dates or detectable years and a neutral score when unknown.
 - HTML extraction removes scripts, styles, navigation, footers, forms, and `noscript`.
 - Page requests reject obvious local/private literal URLs and validate redirects.
 - Retrieved content is treated as untrusted evidence. The synthesis prompt explicitly says
   never to follow instructions found inside sources.
 - Source deduplication canonicalizes URLs, removes common tracking parameters, and collapses
   highly similar titles.
+- Synthesis returns a required JSON schema with non-empty executive summary, key points,
+  important findings, actionable insights, limitations, and valid used-source IDs.
+- Invalid structured output receives one repair attempt. Valid data is rendered into fixed
+  Markdown headings and a deterministic reference list by `research_agent/reporting.py`.
 
 ## 8. SQLite schema
 
@@ -190,6 +205,8 @@ research_agent/
   __init__.py                 Public package exports
   agent.py                    Jev/LLM routing, context, planning, research, synthesis
   jev.py                      Optional TypeSafe typed intent-decision adapter
+  relevance.py                Candidate relevance/authority/freshness/quality gate
+  reporting.py                Required report schema, validation, repair target, renderer
   providers.py                Multi-provider OpenAI-compatible LLM adapter
   search.py                   DuckDuckGo/Tavily search and webpage extraction
   memory.py                   SQLite threads, messages, facts, and research history
@@ -199,6 +216,8 @@ research_agent/
 tests/
   test_agent_helpers.py       Routing, parallelism, autonomous sources, recall, provider tests
   test_jev.py                 Jev request parsing, research routing, and fallback tests
+  test_relevance.py           Irrelevant-source filtering and source-quality scores
+  test_reporting.py           Required fields, fixed headings, and repair behavior
   test_memory.py              Research history, threads, facts, deletion, clearing persistence
   test_deduplication.py       URL and source deduplication
   test_exporters.py           Markdown and PDF exports
@@ -232,6 +251,7 @@ LLM_PROVIDER=openai
 RESEARCH_MODEL=
 SEARCH_BACKEND=auto
 MAX_PARALLEL_SEARCHES=4
+MIN_SOURCE_RELEVANCE=0.08
 RESEARCH_DB_PATH=data/research_history.db
 ```
 
@@ -261,7 +281,7 @@ Run verification:
 .venv\Scripts\python.exe -m pytest -q
 ```
 
-Current expected result: `28 passed`.
+Current expected result: `33 passed`.
 
 ## 12. Important design decisions
 
@@ -274,6 +294,10 @@ Current expected result: `28 passed`.
 - Web research is decoupled from built-in vendor tools because provider capabilities differ.
 - In automatic search mode, the LLM makes per-task backend and authoritative-domain choices;
   those choices are validated against configured providers and enforced during search.
+- Source acceptance is a separate deterministic quality-gate step rather than an instruction
+  left only to the final synthesis prompt.
+- Reports use validated structured data internally and deterministic Markdown rendering so
+  required sections and actionable insights cannot silently disappear.
 - Ordinary chat does not perform web search, reducing cost and latency.
 - Full chat transcripts are visible and persistent; recent messages are trimmed only when the
   provider-neutral context budget would exceed roughly 60,000 characters.
@@ -286,7 +310,7 @@ Current expected result: `28 passed`.
 
 ## 13. Current verification coverage
 
-The 28-test suite currently verifies:
+The 33-test suite currently verifies:
 
 - research planning and mocked end-to-end synthesis;
 - correct TypeSafe `/v1/systemone` typed-choice request construction and response parsing;
@@ -296,6 +320,11 @@ The 28-test suite currently verifies:
 - low-confidence Jev decisions falling back to the LLM router;
 - actual use of multiple worker threads;
 - execution of an LLM-selected search backend with its selected authoritative domains;
+- explicit removal of an unrelated search result before synthesis;
+- authority and freshness scoring for a current preferred-domain source;
+- rejection of an empty actionable-insights field;
+- deterministic rendering of every required report section;
+- one-pass repair of invalid structured LLM report output;
 - intent routing that skips search for greetings;
 - research intent running the full workflow;
 - same-thread follow-up recall;
@@ -328,6 +357,8 @@ Model and search settings expander.
 - Thread titles are derived from the first user message rather than generated semantically.
 - Jev is an optional external early-access service; automated tests mock its API, so a valid
   account/key is required for a live integration demonstration.
+- Freshness scoring is heuristic when a provider does not return a publication date; unknown
+  dates receive a neutral score rather than being treated as current or stale.
 
 ## 15. Maintenance checklist
 

@@ -51,7 +51,16 @@ def deduplicate_sources(sources: list[Source]) -> list[Source]:
         ):
             continue
         seen_urls.add(normalized_url)
-        unique.append(Source(source.title or source.url, normalized_url, source.search_query))
+        unique.append(
+            Source(
+                title=source.title or source.url,
+                url=normalized_url,
+                search_query=source.search_query,
+                relevance_score=source.relevance_score,
+                authority_score=source.authority_score,
+                freshness_score=source.freshness_score,
+                quality_score=source.quality_score,
+            )
+        )
 
     return unique
-

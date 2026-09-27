@@ -54,7 +54,17 @@ class ResearchLLM:
                 }
             )
         if "synthesis component" in prompt:
-            return "# Research Summary: Test\n\n## References\n\n- [S1] Evidence"
+            return json.dumps(
+                {
+                    "title": "Test",
+                    "executive_summary": "Summary [S1].",
+                    "key_points": ["Key point [S1]."],
+                    "important_findings": ["Finding [S1]."],
+                    "actionable_insights": ["Verify the result."],
+                    "limitations": ["Limited evidence."],
+                    "used_source_ids": ["S1"],
+                }
+            )
         raise AssertionError("Jev should replace the LLM intent-classification call")
 
 

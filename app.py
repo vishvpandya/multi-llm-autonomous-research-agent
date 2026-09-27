@@ -65,6 +65,8 @@ def message_metadata(outcome: Any, agent: ResearchAgent) -> dict[str, Any]:
                 or agent.search.name,
                 "sources": [source.to_dict() for source in outcome.report.sources],
                 "plan": outcome.report.plan.to_dict(),
+                "candidates_evaluated": outcome.report.candidates_evaluated,
+                "candidates_filtered": outcome.report.candidates_filtered,
             }
         )
     return metadata
@@ -98,9 +100,21 @@ def render_assistant_metadata(message: dict[str, Any]) -> None:
                     st.caption(" • ".join(strategy))
             st.caption(
                 f'{len(metadata.get("sources", []))} unique sources • '
+                f'{metadata.get("candidates_filtered", 0)} irrelevant filtered • '
                 f'{metadata.get("duration_seconds", 0):.1f} seconds • '
                 f'{metadata.get("search_backend", "Web search")}'
             )
+            sources = metadata.get("sources", [])
+            if sources:
+                st.markdown("**Source quality**")
+                for source in sources:
+                    st.caption(
+                        f'{source.get("title", "Source")} — '
+                        f'relevance {source.get("relevance_score", 0):.2f}, '
+                        f'authority {source.get("authority_score", 0):.2f}, '
+                        f'freshness {source.get("freshness_score", 0):.2f}, '
+                        f'overall {source.get("quality_score", 0):.2f}'
+                    )
         base_name = filename_for(message["content"].splitlines()[0])
         left, right = st.columns(2)
         with left:

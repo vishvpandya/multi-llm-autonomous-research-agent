@@ -14,8 +14,10 @@
 | Automatic fallback when Jev is unavailable | ✅ |
 | Autonomous search backend and domain selection | ✅ |
 | Parallel multi-source research | ✅ |
-| Extraction, relevance filtering and deduplication | ✅ |
+| Explicit relevance, authority and freshness scoring | ✅ |
+| Pre-synthesis filtering and deduplication | ✅ |
 | Structured reports with clickable citations | ✅ |
+| Schema validation and automatic report repair | ✅ |
 | Markdown and PDF exports | ✅ |
 | SQLite conversation, fact and research memory | ✅ |
 
@@ -41,7 +43,9 @@ flowchart TD
     S1 --> E[Extract and normalize evidence]
     S2 --> E
     S3 --> E
-    E --> D[Remove duplicate and irrelevant content]
+    E --> Q[Score relevance, authority and freshness]
+    Q --> F[Remove irrelevant evidence]
+    F --> D[Remove duplicate sources]
     D --> R[LLM synthesizes cited structured report]
     R --> X[Markdown and PDF downloads]
     R --> DB[(SQLite research memory)]
@@ -96,7 +100,7 @@ sequenceDiagram
             Planner->>Search: Query selected backend and domains
         end
         Search-->>Planner: Extracted evidence and URLs
-        Planner->>Planner: Deduplicate, filter and synthesize
+        Planner->>Planner: Score, filter, deduplicate and synthesize
         Planner-->>UI: Structured cited report
         UI->>Memory: Save plan, report and sources
     end
@@ -138,6 +142,47 @@ The selection is operational, not decorative:
 - DuckDuckGo and SerpAPI receive `site:` constraints.
 - Unsupported backend choices fall back to the best configured provider.
 - The **Research details** panel displays each decision directly in the interface.
+
+## Evidence quality gate
+
+Every search candidate is evaluated before the synthesis model can see it:
+
+```mermaid
+flowchart LR
+    C[Search candidates] --> R[Relevance score]
+    C --> A[Authority score]
+    C --> F[Freshness score]
+    R --> Q[Weighted quality score]
+    A --> Q
+    F --> Q
+    Q --> G{Meets relevance threshold?}
+    G -->|Yes| K[Keep for synthesis]
+    G -->|No| X[Remove as irrelevant]
+    K --> D[Canonical URL and title deduplication]
+```
+
+- **Relevance** measures overlap with the planned query and rationale.
+- **Authority** rewards explicitly preferred domains, government, academic and documentation
+  sources.
+- **Freshness** uses publication metadata or detectable years when available.
+- `MIN_SOURCE_RELEVANCE` controls the filtering threshold.
+- Scores and the number of filtered candidates appear in **Research details**.
+
+## Guaranteed report structure
+
+The synthesis model returns a typed JSON object rather than free-form Markdown. The
+application requires non-empty values for:
+
+- executive summary;
+- key points;
+- important findings;
+- actionable insights;
+- limitations;
+- valid source IDs.
+
+The application validates the object, retries once with a repair instruction when necessary,
+and deterministically renders the final Markdown headings and reference list. This prevents
+missing sections and guarantees at least one actionable next step.
 
 ## Quick start
 
@@ -193,6 +238,7 @@ SEARCH_BACKEND=auto
 TAVILY_API_KEY=
 SERPAPI_API_KEY=
 MAX_PARALLEL_SEARCHES=4
+MIN_SOURCE_RELEVANCE=0.08
 ```
 
 DuckDuckGo remains available without a search API key.
@@ -221,9 +267,10 @@ Then demonstrate:
 
 1. The intent and decision router shown below the answer.
 2. Parallel tasks, selected backends, domains and source types in **Research details**.
-3. The structured report and clickable citations.
-4. Markdown and PDF downloads.
-5. Persistence by restarting the app and reopening the conversation.
+3. Source quality scores and the number of irrelevant candidates removed.
+4. The validated structured report and clickable citations.
+5. Markdown and PDF downloads.
+6. Persistence by restarting the app and reopening the saved chat from **Chats**.
 
 ## Memory model
 
@@ -249,6 +296,8 @@ app.py                         Streamlit interface and thread orchestration
 research_agent/
   agent.py                    Routing, planning, parallel gathering and synthesis
   jev.py                      Optional TypeSafe Jev typed-decision adapter
+  relevance.py                Relevance, authority, freshness and quality scoring
+  reporting.py                Structured report validation and Markdown rendering
   providers.py                Multi-provider generative LLM adapter
   search.py                   DuckDuckGo, Tavily, SerpAPI and page extraction
   memory.py                   SQLite conversations, facts and research history

@@ -9,6 +9,20 @@ from research_agent.providers import PROVIDERS, create_llm_client
 from research_agent.search import SearchHit
 
 
+def structured_report(title: str = "Test") -> str:
+    return json.dumps(
+        {
+            "title": title,
+            "executive_summary": "Evidence-based summary [S1].",
+            "key_points": ["Key point [S1]."],
+            "important_findings": ["Important finding [S1]."],
+            "actionable_insights": ["Verify the evidence before acting."],
+            "limitations": ["The available evidence is limited."],
+            "used_source_ids": ["S1"],
+        }
+    )
+
+
 class FakeLLM:
     provider_name = "Fake LLM"
     model = "fake-model"
@@ -37,7 +51,7 @@ class FakeLLM:
                     ],
                 }
             )
-        return "# Research Summary: Test\n\n## References\n\n- [S1] Evidence"
+        return structured_report()
 
 
 class FakeSearch:
@@ -123,7 +137,7 @@ class RoutedResearchLLM:
                     ],
                 }
             )
-        return "# Research Summary: Comparison\n\n## References\n\n- [S1] Evidence"
+        return structured_report("Comparison")
 
 
 class ExplodingSearch:

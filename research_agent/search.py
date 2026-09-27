@@ -17,6 +17,7 @@ class SearchHit:
     url: str
     snippet: str = ""
     content: str = ""
+    published_date: str = ""
 
 
 class SearchProvider(Protocol):
@@ -123,6 +124,7 @@ class DuckDuckGoSearchProvider:
                     url=url,
                     snippet=str(item.get("body") or item.get("snippet") or ""),
                     content=_extract_page_text(url),
+                    published_date=str(item.get("date") or ""),
                 )
             )
         return hits
@@ -169,6 +171,7 @@ class TavilySearchProvider:
                     url=url,
                     snippet=str(item.get("content") or ""),
                     content=str(item.get("raw_content") or "")[:3500],
+                    published_date=str(item.get("published_date") or ""),
                 )
             )
         return hits
@@ -215,6 +218,7 @@ class SerpApiSearchProvider:
                     url=url,
                     snippet=str(item.get("snippet") or ""),
                     content=_extract_page_text(url),
+                    published_date=str(item.get("date") or ""),
                 )
             )
         return hits
