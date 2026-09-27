@@ -48,6 +48,8 @@ def message_metadata(outcome: Any, agent: ResearchAgent) -> dict[str, Any]:
         "provider": agent.provider,
         "model": agent.model,
         "web_search": outcome.report is not None,
+        "decision_router": outcome.decision.router,
+        "decision_confidence": outcome.decision.confidence,
     }
     if outcome.report:
         planned_backends = [
@@ -124,6 +126,11 @@ def render_assistant_metadata(message: dict[str, Any]) -> None:
         f'{metadata.get("provider", "LLM")} / {metadata.get("model", "")}'.strip(" /"),
     ]
     details.append("web research" if metadata.get("web_search") else "no web search")
+    router = metadata.get("decision_router")
+    if router:
+        confidence = metadata.get("decision_confidence")
+        suffix = f" ({confidence:.0%})" if isinstance(confidence, (int, float)) else ""
+        details.append(f"routing: {router}{suffix}")
     st.caption(" • ".join(details))
 
 
@@ -223,6 +230,35 @@ with st.sidebar:
     if search_backend == "serpapi" and not serpapi_environment_key:
         serpapi_key = st.text_input("SerpAPI API key", type="password")
 
+    st.markdown("**Optional decision routing**")
+    configured_jev = os.getenv("JEV_ENABLED", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+    jev_enabled = st.toggle(
+        "Use TypeSafe Jev",
+        value=configured_jev,
+        help=(
+            "Jev classifies requests into chat, question, clarification, current-info, "
+            "or research routes. The selected LLM automatically takes over if Jev is off "
+            "or unavailable."
+        ),
+    )
+    jev_environment_key = os.getenv("JEV_API_KEY", "")
+    jev_key = jev_environment_key
+    if jev_enabled and not jev_environment_key:
+        jev_key = st.text_input(
+            "TypeSafe Jev API key",
+            type="password",
+            help="Optional. Without a key, the existing LLM router is used.",
+        )
+    if jev_enabled and jev_environment_key:
+        st.success("Using JEV_API_KEY from the environment.")
+    elif jev_enabled and not jev_key:
+        st.info("No Jev key provided. LLM routing fallback remains active.")
+
     st.caption("Threads and messages are saved locally in SQLite.")
 
 active_conversation = memory.get_conversation(active_id)
@@ -283,6 +319,8 @@ if user_message:
                     search_backend=search_backend,
                     tavily_api_key=tavily_key,
                     serpapi_api_key=serpapi_key,
+                    jev_enabled=jev_enabled,
+                    jev_api_key=jev_key,
                     memory=memory,
                 )
 

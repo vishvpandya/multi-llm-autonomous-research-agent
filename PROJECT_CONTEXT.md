@@ -5,7 +5,7 @@
 
 **Last updated:** 2026-09-27  
 **Workspace:** repository root  
-**Current verified state:** Python compilation passes, 23 automated tests pass, and the
+**Current verified state:** Python compilation passes, 28 automated tests pass, and the
 Streamlit UI smoke test passes.
 
 ## 1. Project goal
@@ -33,11 +33,14 @@ The application is a Streamlit chatbot resembling ChatGPT/Gemini:
 - Input uses `st.chat_input`.
 - Model and search settings are permanently visible in the sidebar; they are not inside a
   collapsible expander.
+- The sidebar has an optional **Use TypeSafe Jev** toggle and session API-key input. Missing
+  credentials do not block the app; the existing LLM router remains active.
 - There is intentionally no visible **Long-term memory** section.
 - Long-term memory still operates silently in the background.
 - Research answers include an expandable research-details area showing every task's chosen
   backend, preferred domains, source types, and rationale, plus Markdown/PDF downloads.
-- Ordinary chat answers show the detected intent, provider/model, and that no web search ran.
+- Every assistant answer shows the detected intent, provider/model, web-search state, and
+  whether routing used Jev, the LLM router, or the automatic LLM fallback.
 
 ## 3. Memory model
 
@@ -73,7 +76,11 @@ User message
     ├─ Load current thread history
     ├─ Load cross-thread durable facts
     ▼
-LLM intent router
+Optional TypeSafe Jev router
+    ├─ successful typed decision ─► selected intent + confidence
+    └─ disabled/missing key/error ─► existing LLM intent router
+
+Selected intent
     ├─ casual_chat ───────────────► direct conversational response
     ├─ simple_question ───────────► direct answer
     ├─ clarification_required ────► one clarifying question
@@ -87,7 +94,10 @@ LLM plan with per-task backend/domain selection → 3–5 parallel searches → 
 
 The five allowed intent values are defined by the router prompt in
 `research_agent/agent.py`. Only `current_information` and `research_request` trigger web
-search.
+search. When Jev selects a research intent, the agent skips the generative LLM classification
+call and starts planning. For conversational or clarification routes, the selected LLM still
+writes the response and extracts explicit durable-memory updates. Any Jev exception or invalid
+response is caught and routed through the original LLM classifier.
 
 ## 5. LLM providers
 
@@ -108,7 +118,27 @@ All providers use an OpenAI-compatible Chat Completions adapter in
 Model IDs are editable because provider model availability can change. Verify current model
 IDs against provider documentation before changing defaults.
 
-## 6. Web search and evidence
+## 6. Optional TypeSafe Jev routing
+
+`research_agent/jev.py` integrates TypeSafe Jev as a specialized decision layer, not as a
+generative LLM provider.
+
+- Official endpoint: `POST https://api.typesafe.ai/v1/systemone`.
+- Default model alias: `jev-latest`.
+- Input includes the newest query plus bounded recent-conversation and durable-fact context.
+- A typed `choice` question maps the request to the same five intents used by the LLM router.
+- Valid responses store the selected intent and confidence in assistant message metadata.
+- Decisions below `JEV_MIN_CONFIDENCE` (default `0.60`) fall back to the LLM router while
+  retaining the observed confidence in message metadata.
+- Research/current-information routes proceed without a separate LLM classification call.
+- Direct-answer and clarification routes retain Jev's intent while the selected LLM writes
+  the user-facing response and extracts memory updates.
+- Disabled Jev, a missing key, HTTP errors, timeouts, malformed data, or unsupported choices
+  automatically fall back to the existing LLM intent router.
+- Jev is enabled with `JEV_ENABLED=true` or the Streamlit toggle. It is never required for
+  the core application to work.
+
+## 7. Web search and evidence
 
 The LLM provider is intentionally separated from the search provider so every model vendor
 gets the same research capability.
@@ -135,7 +165,7 @@ gets the same research capability.
 - Source deduplication canonicalizes URLs, removes common tracking parameters, and collapses
   highly similar titles.
 
-## 7. SQLite schema
+## 8. SQLite schema
 
 Default database: `data/research_history.db` (ignored by Git).
 
@@ -152,13 +182,14 @@ Tables:
 SQLite foreign keys are enabled for every connection. Thread IDs are UUIDs. A first user
 message automatically generates a short thread title.
 
-## 8. Project structure
+## 9. Project structure
 
 ```text
 app.py                         Streamlit chat UI and thread orchestration
 research_agent/
   __init__.py                 Public package exports
-  agent.py                    Intent routing, context, planning, parallel research, synthesis
+  agent.py                    Jev/LLM routing, context, planning, research, synthesis
+  jev.py                      Optional TypeSafe typed intent-decision adapter
   providers.py                Multi-provider OpenAI-compatible LLM adapter
   search.py                   DuckDuckGo/Tavily search and webpage extraction
   memory.py                   SQLite threads, messages, facts, and research history
@@ -167,6 +198,7 @@ research_agent/
   exporters.py                Markdown bytes and ReportLab PDF rendering
 tests/
   test_agent_helpers.py       Routing, parallelism, autonomous sources, recall, provider tests
+  test_jev.py                 Jev request parsing, research routing, and fallback tests
   test_memory.py              Research history, threads, facts, deletion, clearing persistence
   test_deduplication.py       URL and source deduplication
   test_exporters.py           Markdown and PDF exports
@@ -178,7 +210,7 @@ AGENTS.md                     Requires this context document to stay synchronize
 PROJECT_CONTEXT.md            This recovery document
 ```
 
-## 9. Configuration
+## 10. Configuration
 
 `.env.example` defines all supported variables:
 
@@ -189,6 +221,11 @@ GEMINI_API_KEY=
 GROQ_API_KEY=
 CUSTOM_LLM_API_KEY=
 CUSTOM_LLM_BASE_URL=
+JEV_ENABLED=false
+JEV_API_KEY=
+JEV_MODEL=jev-latest
+JEV_BASE_URL=https://api.typesafe.ai
+JEV_MIN_CONFIDENCE=0.60
 TAVILY_API_KEY=
 SERPAPI_API_KEY=
 LLM_PROVIDER=openai
@@ -200,7 +237,7 @@ RESEARCH_DB_PATH=data/research_history.db
 
 Never copy values from the real `.env` into documentation, test output, commits, or chat.
 
-## 10. Setup and commands
+## 11. Setup and commands
 
 PowerShell setup:
 
@@ -224,12 +261,16 @@ Run verification:
 .venv\Scripts\python.exe -m pytest -q
 ```
 
-Current expected result: `23 passed`.
+Current expected result: `28 passed`.
 
-## 11. Important design decisions
+## 12. Important design decisions
 
 - Local history replay is used instead of provider-specific conversation IDs so memory works
   consistently with OpenAI, DeepSeek, Gemini, Groq, and custom compatible services.
+- Jev is modeled as an optional decision router rather than a sixth chat provider because it
+  returns typed decisions, not long-form text. This preserves clean provider responsibilities.
+- The Jev integration is fail-open to the pre-existing LLM router so missing credentials or
+  an external outage cannot disable the agent.
 - Web research is decoupled from built-in vendor tools because provider capabilities differ.
 - In automatic search mode, the LLM makes per-task backend and authoritative-domain choices;
   those choices are validated against configured providers and enforced during search.
@@ -241,11 +282,16 @@ Current expected result: `23 passed`.
 - API calls are excluded from automated tests to avoid spending credits.
 - The user's real `.env` exists locally and must be preserved; never display or overwrite it.
 
-## 12. Current verification coverage
+## 13. Current verification coverage
 
-The 23-test suite currently verifies:
+The 28-test suite currently verifies:
 
 - research planning and mocked end-to-end synthesis;
+- correct TypeSafe `/v1/systemone` typed-choice request construction and response parsing;
+- a Jev research decision bypassing the generative LLM intent-classification call;
+- automatic fallback to the LLM router when Jev fails;
+- fallback remaining operational when Jev is enabled without an API key;
+- low-confidence Jev decisions falling back to the LLM router;
 - actual use of multiple worker threads;
 - execution of an LLM-selected search backend with its selected authoritative domains;
 - intent routing that skips search for greetings;
@@ -267,7 +313,7 @@ A Streamlit `AppTest` smoke check has also verified that the app renders without
 contains one chat input, has no visible Long-term memory expander, and has no collapsible
 Model and search settings expander.
 
-## 13. Known limitations and next sensible improvements
+## 14. Known limitations and next sensible improvements
 
 - Durable fact extraction beyond explicit names relies on the selected LLM returning valid
   `memory_updates` JSON.
@@ -278,8 +324,10 @@ Model and search settings expander.
   outside the current assessment scope.
 - There is no streaming-token UI yet; responses appear after completion.
 - Thread titles are derived from the first user message rather than generated semantically.
+- Jev is an optional external early-access service; automated tests mock its API, so a valid
+  account/key is required for a live integration demonstration.
 
-## 14. Maintenance checklist
+## 15. Maintenance checklist
 
 After every material change:
 

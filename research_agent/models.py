@@ -70,6 +70,8 @@ class QueryDecision:
     reasoning: str
     response: str = ""
     memory_updates: list[dict[str, str]] = field(default_factory=list)
+    router: str = "LLM intent router"
+    confidence: float | None = None
 
     @property
     def requires_research(self) -> bool:

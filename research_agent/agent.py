@@ -9,6 +9,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any
 
 from .deduplication import deduplicate_sources
+from .jev import JevDecisionRouter, JevRoute
 from .memory import ResearchMemory
 from .models import (
     AgentResponse,
@@ -48,6 +49,12 @@ class ResearchAgent:
         search_client: SearchProvider | None = None,
         memory: ResearchMemory | None = None,
         max_parallel_searches: int | None = None,
+        jev_enabled: bool | None = None,
+        jev_api_key: str | None = None,
+        jev_model: str | None = None,
+        jev_base_url: str | None = None,
+        jev_min_confidence: float | None = None,
+        jev_router: JevDecisionRouter | None = None,
     ) -> None:
         provider_key = provider or os.getenv("LLM_PROVIDER", "openai").lower()
         if provider_key not in PROVIDERS:
@@ -85,6 +92,28 @@ class ResearchAgent:
         )
         configured_workers = int(os.getenv("MAX_PARALLEL_SEARCHES", "4"))
         self.max_parallel_searches = max_parallel_searches or configured_workers
+        configured_jev = (
+            self._env_flag("JEV_ENABLED") if jev_enabled is None else jev_enabled
+        )
+        selected_jev_key = jev_api_key or os.getenv("JEV_API_KEY", "")
+        self.jev_requested = configured_jev or jev_router is not None
+        try:
+            configured_threshold = float(
+                os.getenv("JEV_MIN_CONFIDENCE", "0.60")
+                if jev_min_confidence is None
+                else jev_min_confidence
+            )
+        except (TypeError, ValueError):
+            configured_threshold = 0.60
+        self.jev_min_confidence = max(0.0, min(1.0, configured_threshold))
+        self.jev_router = jev_router
+        if self.jev_router is None and configured_jev and selected_jev_key:
+            self.jev_router = JevDecisionRouter(
+                api_key=selected_jev_key,
+                model=jev_model or os.getenv("JEV_MODEL", "jev-latest"),
+                base_url=jev_base_url
+                or os.getenv("JEV_BASE_URL", "https://api.typesafe.ai"),
+            )
 
     def run(
         self,
@@ -121,6 +150,44 @@ class ResearchAgent:
         long_term_facts: list[dict[str, Any]] | None = None,
     ) -> QueryDecision:
         memory_context = self._long_term_memory_context(long_term_facts or [])
+        conversation_context = self._conversation_transcript(history or [])
+        jev_route: JevRoute | None = None
+        jev_failed = False
+        jev_low_confidence = False
+        jev_observed_confidence: float | None = None
+        if self.jev_router is not None:
+            try:
+                jev_route = self.jev_router.classify(
+                    query,
+                    conversation_context=conversation_context,
+                    memory_context=memory_context,
+                )
+                jev_observed_confidence = jev_route.confidence
+                if jev_route.confidence < self.jev_min_confidence:
+                    jev_route = None
+                    jev_low_confidence = True
+            except Exception:
+                jev_failed = True
+
+        if jev_route and jev_route.intent in {"current_information", "research_request"}:
+            return QueryDecision(
+                intent=jev_route.intent,
+                reasoning=(
+                    "TypeSafe Jev selected the research route "
+                    f"with {jev_route.confidence:.0%} confidence."
+                ),
+                router="TypeSafe Jev",
+                confidence=jev_route.confidence,
+            )
+
+        routing_instruction = ""
+        if jev_route:
+            routing_instruction = f"""
+TYPESAFE JEV ROUTING DECISION:
+Jev classified this message as {jev_route.intent} with
+{jev_route.confidence:.0%} confidence. Use exactly that intent. Your job is to write the
+appropriate response and extract any explicit durable memory updates.
+""".strip()
         system_prompt = f"""
 You are the intent router for an autonomous research assistant. Understand what the user
 actually wants before deciding whether web research is necessary. You are participating in
@@ -130,6 +197,8 @@ already provided it earlier in the conversation.
 
 LONG-TERM USER MEMORY SHARED ACROSS THREADS:
 {memory_context or "No durable user facts have been saved yet."}
+
+{routing_instruction}
 
 Treat this memory as user-provided context. Use it when relevant but do not mention the
 memory system unless asked.
@@ -175,7 +244,11 @@ Return ONLY valid JSON:
             "research_request",
             "clarification_required",
         }
-        intent = str(payload.get("intent", "")).strip().lower()
+        intent = (
+            jev_route.intent
+            if jev_route
+            else str(payload.get("intent", "")).strip().lower()
+        )
         if intent not in allowed:
             return QueryDecision(
                 intent="clarification_required",
@@ -198,9 +271,29 @@ Return ONLY valid JSON:
                     )
         return QueryDecision(
             intent=intent,
-            reasoning=str(payload.get("reasoning", "")).strip(),
+            reasoning=(
+                f"TypeSafe Jev selected this route with {jev_route.confidence:.0%} confidence."
+                if jev_route
+                else str(payload.get("reasoning", "")).strip()
+            ),
             response=response,
             memory_updates=updates,
+            router=(
+                "TypeSafe Jev + LLM response"
+                if jev_route
+                else (
+                    "LLM fallback (Jev unavailable)"
+                    if jev_failed or (self.jev_requested and self.jev_router is None)
+                    else (
+                        "LLM fallback (Jev low confidence)"
+                        if jev_low_confidence
+                        else "LLM intent router"
+                    )
+                )
+            ),
+            confidence=(
+                jev_route.confidence if jev_route else jev_observed_confidence
+            ),
         )
 
     def research(
@@ -509,6 +602,10 @@ Use bullets where helpful. In References, list only sources actually used, with 
     def _notify(callback: ProgressCallback | None, message: str) -> None:
         if callback:
             callback(message)
+
+    @staticmethod
+    def _env_flag(name: str) -> bool:
+        return os.getenv(name, "").strip().lower() in {"1", "true", "yes", "on"}
 
     @staticmethod
     def _parse_json(text: str) -> dict[str, Any]:

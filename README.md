@@ -1,90 +1,165 @@
-# Multi-LLM Autonomous Research Agent
+# 🔎 Multi-LLM Autonomous Research Agent
 
-An internship-assessment project that accepts a topic, autonomously chooses suitable
-external sources, researches several angles in parallel, removes duplicate evidence, and
-returns a structured report with clickable citations and actionable insights.
+> A conversation-aware Streamlit agent that decides when research is needed, chooses suitable
+> external sources, gathers evidence in parallel, removes duplication, writes a cited and
+> actionable report, and remembers previous work.
 
-The reasoning model and search engine are independent. You can switch LLM providers
-without rewriting the research workflow.
+## Project at a glance
 
-## Supported LLM providers
+| Capability | Included |
+|---|:---:|
+| ChatGPT-style persistent conversations | ✅ |
+| OpenAI, DeepSeek, Gemini, Groq and custom LLMs | ✅ |
+| Optional TypeSafe Jev decision routing | ✅ |
+| Automatic fallback when Jev is unavailable | ✅ |
+| Autonomous search backend and domain selection | ✅ |
+| Parallel multi-source research | ✅ |
+| Extraction, relevance filtering and deduplication | ✅ |
+| Structured reports with clickable citations | ✅ |
+| Markdown and PDF exports | ✅ |
+| SQLite conversation, fact and research memory | ✅ |
 
-| Provider | Default model | API key variable |
+## How the agent works
+
+```mermaid
+flowchart TD
+    U[User message] --> M[Load thread history and durable facts]
+    M --> Q{Jev enabled and configured?}
+    Q -->|Yes| J[TypeSafe Jev typed intent decision]
+    Q -->|No| L[Existing LLM intent router]
+    J -->|API error or invalid result| L
+    J -->|Valid decision| I{Detected intent}
+    L --> I
+
+    I -->|Casual or simple| C[LLM conversational answer]
+    I -->|Needs clarification| K[Ask one clarification question]
+    I -->|Current or research| P[LLM creates 3 to 5 research tasks]
+
+    P --> S1[Search task 1]
+    P --> S2[Search task 2]
+    P --> S3[Search task N]
+    S1 --> E[Extract and normalize evidence]
+    S2 --> E
+    S3 --> E
+    E --> D[Remove duplicate and irrelevant content]
+    D --> R[LLM synthesizes cited structured report]
+    R --> X[Markdown and PDF downloads]
+    R --> DB[(SQLite research memory)]
+    C --> DB2[(SQLite conversation memory)]
+    K --> DB2
+```
+
+### Why Jev is optional
+
+Jev is a TypeSafe System One decision model, not a long-form chat model. It handles the
+small but important routing decision; the selected generative LLM still handles conversation,
+planning and report writing.
+
+```mermaid
+flowchart LR
+    A[Incoming request] --> B{Optional Jev layer}
+    B -->|Configured and available| C[Typed intent plus confidence]
+    B -->|Disabled, missing key or failure| D[LLM routing fallback]
+    C --> E[Normal agent workflow]
+    D --> E
+```
+
+- **With Jev:** typed classification and a confidence score are recorded in message metadata.
+- **Without Jev:** the existing LLM router behaves exactly as before.
+- **On failure or low confidence:** fallback is automatic; the user's request is not interrupted.
+- **Separation of responsibilities:** Jev routes; OpenAI/Gemini/DeepSeek/Groq generate.
+
+## Research pipeline
+
+```mermaid
+sequenceDiagram
+    actor User
+    participant UI as Streamlit
+    participant Router as Jev or LLM router
+    participant Planner as Selected LLM
+    participant Search as DDG / Tavily / SerpAPI
+    participant Memory as SQLite
+
+    User->>UI: Ask a natural question
+    UI->>Memory: Load thread and durable facts
+    UI->>Router: Classify intent
+    alt Direct answer
+        Router->>Planner: Generate conversational response
+        Planner-->>UI: Answer
+    else Research required
+        Router->>Planner: Create source-aware plan
+        par Independent task 1
+            Planner->>Search: Query selected backend and domains
+        and Independent task 2
+            Planner->>Search: Query selected backend and domains
+        and Independent task N
+            Planner->>Search: Query selected backend and domains
+        end
+        Search-->>Planner: Extracted evidence and URLs
+        Planner->>Planner: Deduplicate, filter and synthesize
+        Planner-->>UI: Structured cited report
+        UI->>Memory: Save plan, report and sources
+    end
+```
+
+## Supported services
+
+### Generative LLMs
+
+| Provider | Default model | Environment variable |
 |---|---|---|
 | OpenAI / ChatGPT | `gpt-5.5` | `OPENAI_API_KEY` |
 | DeepSeek | `deepseek-flash` | `DEEPSEEK_API_KEY` |
 | Google Gemini | `gemini-3.8-flash` | `GEMINI_API_KEY` |
 | Groq | `openai/gpt-oss-20b` | `GROQ_API_KEY` |
-| Any OpenAI-compatible API | User supplied | `CUSTOM_LLM_API_KEY` |
+| Custom OpenAI-compatible API | User supplied | `CUSTOM_LLM_API_KEY` |
 
-Model IDs can be changed directly in the interface, which is useful when providers add or
-retire models. Provider URLs and defaults live in `research_agent/providers.py`.
+### Decision and search services
 
-## Features
+| Service | Role | Required? |
+|---|---|:---:|
+| TypeSafe Jev | Typed intent classification with confidence | No |
+| DuckDuckGo | Key-free general web discovery | Built in |
+| Tavily | Deep search with extracted content | No |
+| SerpAPI | Google organic/current coverage | No |
 
-- **Intent-first routing:** every message is understood before action. Greetings and simple
-  questions receive direct answers, ambiguous requests receive a clarification question,
-  and only current-information or research requests trigger web searches.
-- **Persistent chat threads:** create, switch, and delete ChatGPT-style conversations. Every
-  user and assistant message is stored in SQLite and restored after an app restart.
-- **Conversation-aware replies:** the current thread transcript is sent with each new turn,
-  so follow-ups, names, preferences, pronouns, and references to earlier messages work.
-- **Long-term user memory:** durable facts explicitly provided by the user—such as a
-  preferred name, occupation, preferences, or ongoing goals—are available across separate
-  chat threads. Secrets such as passwords and API keys are rejected.
-- **Multi-provider LLM layer:** one adapter supports OpenAI, DeepSeek, Gemini, Groq, and
-  custom OpenAI-compatible endpoints.
-- **Provider-independent web research:** choose key-free DuckDuckGo, Tavily, or SerpAPI.
-  The same workflow works even when an LLM vendor has no built-in search tool.
-- **Autonomous source planning and execution:** the selected LLM classifies the topic and
-  chooses search angles, source types, authoritative domains, and the most appropriate
-  available search backend for each task. Domain choices are enforced during retrieval,
-  and each choice is visible in the report's Research details panel.
-- **Parallel gathering:** independent searches run concurrently with a configurable worker
-  limit.
-- **Evidence extraction:** the agent retrieves search snippets and readable webpage text.
-- **Evidence safety:** retrieved pages are treated as untrusted data, and the synthesis
-  prompt explicitly rejects instructions embedded in sources.
-- **Deduplication:** tracking parameters are stripped and duplicate URL/title variants are
-  collapsed before synthesis.
-- **Structured output:** reports contain an executive summary, key points, findings,
-  actionable insights, limitations, and references.
-- **Exports:** download reports as Markdown or PDF.
-- **Memory:** chat threads, messages, completed searches, plans, reports, model metadata,
-  and sources are stored in local SQLite.
+## Autonomous source selection
 
-## Architecture
+When `SEARCH_BACKEND=auto`, the planner chooses for every task:
 
-```text
-                         ┌─ OpenAI
-                         ├─ DeepSeek
-Chat thread ─► LLM adapter├─ Gemini   ─► intent router
-                         ├─ Groq           ├─ casual/simple/unclear ─► direct response
-                         └─ Custom         │
-                                          └─ current/research
-                                                   │
-                                                   ▼
-                                      autonomous search plan
-                                                   │
-                              ┌────────────────────┼────────────────────┐
-                              ▼                    ▼                    ▼
-                         web search           web search           web search
-                         + extraction         + extraction         + extraction
-                              └────────────────────┼────────────────────┘
-                                                   ▼
-                                      deduplicate evidence/sources
-                                                   │
-                                                   ▼
-                                      selected LLM synthesizes report
-                                                   │
-                                  ┌────────────────┴────────────────┐
-                                  ▼                                 ▼
-                    SQLite threads + messages                Markdown / PDF
-```
+- the research angle and query;
+- the preferred source types;
+- authoritative domains;
+- the most appropriate configured search backend.
 
-## Setup
+The selection is operational, not decorative:
 
-Requires Python 3.11 or newer.
+- Tavily receives native `include_domains` filters.
+- DuckDuckGo and SerpAPI receive `site:` constraints.
+- Unsupported backend choices fall back to the best configured provider.
+- The **Research details** panel displays each decision for the evaluator.
+
+## Assessment coverage
+
+| Internship requirement | Project implementation | Status |
+|---|---|:---:|
+| Accept a query or topic | Streamlit chat input | ✅ |
+| Search external sources | DuckDuckGo, Tavily and SerpAPI adapters | ✅ |
+| Extract relevant information | Snippets plus readable webpage extraction | ✅ |
+| Remove duplicate or irrelevant content | URL normalization, title similarity and synthesis filtering | ✅ |
+| Key points | Fixed report section | ✅ |
+| Important findings | Fixed report section | ✅ |
+| References and sources | Clickable source-ID citations | ✅ |
+| Actionable insights | Fixed report section | ✅ |
+| Autonomous source selection | Per-task source type, domain and backend decisions | ✅ |
+| Parallel information gathering | `ThreadPoolExecutor` worker pool | ✅ |
+| Export PDF or Markdown | Streamlit download buttons | ✅ |
+| Store previous searches | SQLite research and message history | ✅ |
+
+## Quick start
+
+<details>
+<summary><strong>1. Install the project</strong></summary>
 
 ```powershell
 python -m venv .venv
@@ -93,38 +168,42 @@ pip install -r requirements.txt
 Copy-Item .env.example .env
 ```
 
-Add at least one LLM provider key to `.env`. For example, to use Gemini:
+Python 3.11 or newer is recommended.
+
+</details>
+
+<details>
+<summary><strong>2. Configure at least one generative LLM</strong></summary>
+
+Example using Gemini:
 
 ```dotenv
 GEMINI_API_KEY=your_key_here
 LLM_PROVIDER=gemini
 ```
 
-Then run:
+API keys may instead be entered in the Streamlit sidebar for the current session.
 
-```powershell
-streamlit run app.py
+</details>
+
+<details>
+<summary><strong>3. Optionally enable TypeSafe Jev</strong></summary>
+
+```dotenv
+JEV_ENABLED=true
+JEV_API_KEY=your_key_here
+JEV_MODEL=jev-latest
+JEV_BASE_URL=https://api.typesafe.ai
+JEV_MIN_CONFIDENCE=0.60
 ```
 
-Open `http://localhost:8501`. You can also paste an API key into the sidebar for the
-current session instead of saving it in `.env`.
+If Jev is disabled, has no key, falls below the confidence threshold, times out or returns
+an invalid result, the existing LLM router automatically takes over.
 
-Use **New chat** to create an independent conversation. Choose any earlier thread in the
-sidebar to reopen its complete transcript. Messages remain isolated per thread, while the
-small set of durable user facts is intentionally shared across threads in the background.
-This mirrors the distinction between conversational context and user memory.
+</details>
 
-## Search configuration
-
-`SEARCH_BACKEND=auto` exposes every configured search backend to the LLM planner. The LLM
-then chooses the most appropriate available backend separately for each parallel research
-task. Tavily is suited to deep content extraction, SerpAPI to broad Google/current coverage,
-and DuckDuckGo to general key-free discovery. If the planner returns an unavailable backend,
-the application safely falls back to the best configured provider. Selecting a specific
-backend in the sidebar overrides autonomous backend selection.
-
-The planner also selects authoritative domains where appropriate. DuckDuckGo and SerpAPI
-receive `site:` constraints, while Tavily receives native `include_domains` filters.
+<details>
+<summary><strong>4. Optionally configure premium search providers</strong></summary>
 
 ```dotenv
 SEARCH_BACKEND=auto
@@ -133,57 +212,86 @@ SERPAPI_API_KEY=
 MAX_PARALLEL_SEARCHES=4
 ```
 
-Tavily is useful for extracted research content, SerpAPI provides structured Google organic
-results, and DuckDuckGo keeps the project easy to evaluate without another paid account.
+DuckDuckGo remains available without a search API key.
 
-## Custom provider
+</details>
 
-Any service exposing an OpenAI-compatible Chat Completions endpoint can be used:
-
-```dotenv
-LLM_PROVIDER=custom
-CUSTOM_LLM_API_KEY=your_key
-CUSTOM_LLM_BASE_URL=https://provider.example/v1
-RESEARCH_MODEL=provider-model-id
-```
-
-The same values can be entered in the sidebar.
-
-## Run tests
+<details open>
+<summary><strong>5. Run the application</strong></summary>
 
 ```powershell
-pytest -q
+.venv\Scripts\python.exe -m streamlit run app.py
 ```
 
-Tests cover provider configuration, same-thread recall, cross-thread long-term recall,
-persistent threads, memory clearing, cascade deletion, an end-to-end mocked multi-provider
-research run, actual parallel task execution, source deduplication, and both export formats.
-External API calls are mocked so tests do not spend credits.
+Open `http://localhost:8501`.
 
-## Assessment requirement mapping
+</details>
 
-| Requirement | Implementation |
-|---|---|
-| Accept a query/topic | Streamlit chat input |
-| Understand before acting | Five-way intent router before the research planner |
-| Current thread history | SQLite conversations/messages plus full chat rendering |
-| Conversation awareness | Earlier active-thread messages replayed on each LLM request |
-| Long-term memory | Curated SQLite facts shared across threads with user controls |
-| Search external sources | DuckDuckGo, Tavily, or SerpAPI adapter |
-| Extract relevant information | Search snippets plus webpage text extraction |
-| Remove duplicate/irrelevant content | URL normalization, title similarity, synthesis filter |
-| Structured summary | Six fixed report sections with linked citations |
-| Autonomous source selection | LLM selects source types, authoritative domains, and an available backend per task; retrieval enforces those choices |
-| Parallel gathering | `ThreadPoolExecutor` with configurable concurrency |
-| Multiple LLMs | OpenAI-compatible provider adapter and UI selector |
-| PDF or Markdown export | ReportLab PDF and UTF-8 Markdown downloads |
-| Store previous searches | Research reports stored with their assistant chat messages |
+## Suggested live demonstration
 
-## Provider documentation
+Ask the agent a natural question:
 
-- [OpenAI web search](https://developers.openai.com/api/docs/guides/tools-web-search)
-- [OpenAI conversation state](https://developers.openai.com/api/docs/guides/conversation-state)
+> I live in India and have a budget of ₹20 lakh. Which electric car should I buy in 2026
+> for daily city driving and occasional highway trips?
+
+Then demonstrate:
+
+1. The intent and decision router shown below the answer.
+2. Parallel tasks, selected backends, domains and source types in **Research details**.
+3. The structured report and clickable citations.
+4. Markdown and PDF downloads.
+5. Persistence by restarting the app and reopening the conversation.
+
+## Memory model
+
+```mermaid
+flowchart TB
+    DB[(SQLite)] --> T[Conversation threads]
+    DB --> F[Durable user facts]
+    DB --> H[Research history]
+    T --> T1[Complete user and assistant messages]
+    F --> F1[Explicit names, preferences and ongoing goals]
+    H --> H1[Plans, reports, sources, model metadata and duration]
+```
+
+- Thread messages are isolated by conversation.
+- Explicit durable facts may be reused across conversations.
+- Secrets such as API keys and passwords are rejected from long-term fact memory.
+- Completed research remains available after an application restart.
+
+## Project structure
+
+```text
+app.py                         Streamlit interface and thread orchestration
+research_agent/
+  agent.py                    Routing, planning, parallel gathering and synthesis
+  jev.py                      Optional TypeSafe Jev typed-decision adapter
+  providers.py                Multi-provider generative LLM adapter
+  search.py                   DuckDuckGo, Tavily, SerpAPI and page extraction
+  memory.py                   SQLite conversations, facts and research history
+  models.py                   Shared data models
+  deduplication.py            URL and title-based source deduplication
+  exporters.py                Markdown and PDF generation
+tests/                         Automated unit and workflow tests
+PROJECT_CONTEXT.md             Recovery and maintenance context
+```
+
+## Verification
+
+```powershell
+.venv\Scripts\python.exe -m compileall -q app.py research_agent tests
+.venv\Scripts\python.exe -m pytest -q
+```
+
+- External LLM, Jev and search API calls are mocked in automated tests.
+- Tests do not consume paid API credits.
+- See `PROJECT_CONTEXT.md` for the latest verified test count and known limitations.
+
+## Technical references
+
+- [TypeSafe Jev API](https://api.typesafe.ai/docs)
+- [TypeSafe System One Models and Jev](https://typesafe.ai/blog/introducing-system-one-models-and-jev)
 - [Google Gemini OpenAI compatibility](https://ai.google.dev/gemini-api/docs/openai)
-- [DeepSeek Responses API compatibility](https://api-docs.deepseek.com/guides/responses_api/)
+- [DeepSeek API](https://api-docs.deepseek.com/)
 - [Groq OpenAI compatibility](https://console.groq.com/docs/openai)
 - [SerpAPI Google Search API](https://serpapi.com/search-api)
