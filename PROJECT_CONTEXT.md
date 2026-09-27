@@ -280,6 +280,8 @@ Current expected result: `28 passed`.
 - Long-term memory is deliberately small and fact-oriented rather than copying entire chats
   across threads.
 - API calls are excluded from automated tests to avoid spending credits.
+- The public README is product-focused and avoids internship-rubric or assessment-checklist
+  language; capabilities are demonstrated through feature summaries and workflow diagrams.
 - The user's real `.env` exists locally and must be preserved; never display or overwrite it.
 
 ## 13. Current verification coverage

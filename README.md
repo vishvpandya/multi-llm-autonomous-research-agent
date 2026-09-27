@@ -137,24 +137,7 @@ The selection is operational, not decorative:
 - Tavily receives native `include_domains` filters.
 - DuckDuckGo and SerpAPI receive `site:` constraints.
 - Unsupported backend choices fall back to the best configured provider.
-- The **Research details** panel displays each decision for the evaluator.
-
-## Assessment coverage
-
-| Internship requirement | Project implementation | Status |
-|---|---|:---:|
-| Accept a query or topic | Streamlit chat input | ✅ |
-| Search external sources | DuckDuckGo, Tavily and SerpAPI adapters | ✅ |
-| Extract relevant information | Snippets plus readable webpage extraction | ✅ |
-| Remove duplicate or irrelevant content | URL normalization, title similarity and synthesis filtering | ✅ |
-| Key points | Fixed report section | ✅ |
-| Important findings | Fixed report section | ✅ |
-| References and sources | Clickable source-ID citations | ✅ |
-| Actionable insights | Fixed report section | ✅ |
-| Autonomous source selection | Per-task source type, domain and backend decisions | ✅ |
-| Parallel information gathering | `ThreadPoolExecutor` worker pool | ✅ |
-| Export PDF or Markdown | Streamlit download buttons | ✅ |
-| Store previous searches | SQLite research and message history | ✅ |
+- The **Research details** panel displays each decision directly in the interface.
 
 ## Quick start
 
