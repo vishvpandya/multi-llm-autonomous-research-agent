@@ -3,9 +3,9 @@
 > Recovery document for continuing this project in a new chat. Read this file before making
 > changes. Keep it updated after every material project change.
 
-**Last updated:** 2026-09-27  
+**Last updated:** 2026-09-28
 **Workspace:** repository root  
-**Current verified state:** Python compilation passes, 33 automated tests pass, and the
+**Current verified state:** Python compilation passes, 35 automated tests pass, and the
 Streamlit UI smoke test passes.
 
 ## 1. Project goal
@@ -39,6 +39,9 @@ The application is a Streamlit chatbot resembling ChatGPT/Gemini:
 - There is intentionally no separate **Research history** panel; saved research remains in
   SQLite and is visible naturally inside persistent chat threads.
 - Long-term memory still operates silently in the background.
+- Chats, facts, and research history are automatically isolated by an anonymous browser
+  owner ID. Normal, private/incognito, other-browser, and other-device sessions do not see
+  one another's data. No user-visible or manually entered ID is required.
 - Research answers include an expandable research-details area showing every task's chosen
   backend, preferred domains, source types, rationale, candidate-filter count, and per-source
   relevance/authority/freshness/quality scores, plus Markdown/PDF downloads.
@@ -47,13 +50,15 @@ The application is a Streamlit chatbot resembling ChatGPT/Gemini:
 
 ## 3. Memory model
 
-The project has three distinct persistence layers:
+The project has three distinct persistence layers, all scoped to the current anonymous
+browser owner:
 
 1. **Thread history** — all messages in the active conversation are stored in SQLite and
-   replayed to the selected LLM on subsequent turns. Different threads have separate message
-   transcripts.
+   replayed to the selected LLM on subsequent turns. Different owners and threads have
+   separate message transcripts.
 2. **Long-term user facts** — a small curated set of durable facts is shared across threads.
    Examples include `preferred_name`, occupation, stable preferences, and ongoing goals.
+   Facts may cross that owner's threads but never cross into another browser owner's memory.
    Explicit name statements such as “My name is Vishv” and “Call me Vishv” are captured
    deterministically; the LLM router may extract other explicitly stated durable facts.
 3. **Research memory** — completed research plans, reports, sources, model metadata, and
@@ -64,8 +69,8 @@ Long-term memory safety rules:
 - Only explicitly stated facts should be saved; do not infer user facts.
 - Passwords, API keys, access tokens, payment secrets, and similar credentials are rejected.
 - Long-term facts are supplied to the intent router, research planner, and report synthesizer.
-- A one-time `memory_backfill_v1` migration extracts explicit names from existing user
-  messages.
+- The `memory_owner_backfill_v2` migration adds owner isolation, preserves older records
+  under a non-public `legacy` owner, and extracts explicit facts within each owner scope.
 - The UI for inspecting/clearing facts was removed at the user's request. Storage methods
   (`long_term_facts`, `forget_fact`, and `clear_long_term_memory`) remain available.
 
@@ -186,16 +191,18 @@ Default database: `data/research_history.db` (ignored by Git).
 
 Tables:
 
-- `conversations`: thread ID, title, provider, model, created/updated timestamps.
+- `conversations`: anonymous owner ID, thread ID, title, provider, model, and timestamps.
 - `messages`: ordered user/assistant/system messages, JSON metadata, thread foreign key with
   cascade deletion.
-- `memory_facts`: cross-thread key/value facts with optional source-conversation reference.
-- `searches`: completed research query, model metadata, plan JSON, report Markdown, sources,
-  and duration.
-- `app_metadata`: one-time migration markers such as `memory_backfill_v1`.
+- `memory_facts`: owner-scoped cross-thread key/value facts with an optional source-thread
+  reference and composite `(owner_id, key)` primary key.
+- `searches`: owner-scoped completed query, model metadata, plan JSON, report Markdown,
+  sources, and duration.
+- `app_metadata`: one-time migration markers such as `memory_owner_backfill_v2`.
 
-SQLite foreign keys are enabled for every connection. Thread IDs are UUIDs. A first user
-message automatically generates a short thread title.
+SQLite foreign keys are enabled for every connection. Thread IDs are UUIDs. Every read,
+write, update, and delete is constrained by the active owner ID. A first user message
+automatically generates a short thread title.
 
 ## 9. Project structure
 
@@ -209,7 +216,7 @@ research_agent/
   reporting.py                Required report schema, validation, repair target, renderer
   providers.py                Multi-provider OpenAI-compatible LLM adapter
   search.py                   DuckDuckGo/Tavily search and webpage extraction
-  memory.py                   SQLite threads, messages, facts, and research history
+  memory.py                   Owner-isolated SQLite threads, facts, and research history
   models.py                   Dataclasses including per-task source/domain/backend choices
   deduplication.py            URL canonicalization and title-based source deduplication
   exporters.py                Markdown bytes and ReportLab PDF rendering
@@ -218,7 +225,7 @@ tests/
   test_jev.py                 Jev request parsing, research routing, and fallback tests
   test_relevance.py           Irrelevant-source filtering and source-quality scores
   test_reporting.py           Required fields, fixed headings, and repair behavior
-  test_memory.py              Research history, threads, facts, deletion, clearing persistence
+  test_memory.py              Persistence, owner isolation, legacy migration, and deletion
   test_deduplication.py       URL and source deduplication
   test_exporters.py           Markdown and PDF exports
   test_search.py              SerpAPI parsing, auto-backend priority, and key validation
@@ -281,12 +288,17 @@ Run verification:
 .venv\Scripts\python.exe -m pytest -q
 ```
 
-Current expected result: `33 passed`.
+Current expected result: `35 passed`.
 
 ## 12. Important design decisions
 
 - Local history replay is used instead of provider-specific conversation IDs so memory works
   consistently with OpenAI, DeepSeek, Gemini, Groq, and custom compatible services.
+- Browser isolation uses a one-way SHA-256 hash of Streamlit's browser cookie as the anonymous
+  owner ID. The raw cookie is never persisted. If no cookie is available, a random
+  session-state ID provides safe isolation for the active session.
+- Owner checks live in every SQLite memory operation rather than only in the UI, preventing
+  guessed conversation or search IDs from exposing or deleting another visitor's records.
 - Jev is modeled as an optional decision router rather than a sixth chat provider because it
   returns typed decisions, not long-form text. This preserves clean provider responsibilities.
 - The Jev integration is fail-open to the pre-existing LLM router so missing credentials or
@@ -310,7 +322,7 @@ Current expected result: `33 passed`.
 
 ## 13. Current verification coverage
 
-The 33-test suite currently verifies:
+The 35-test suite currently verifies:
 
 - research planning and mocked end-to-end synthesis;
 - correct TypeSafe `/v1/systemone` typed-choice request construction and response parsing;
@@ -330,6 +342,9 @@ The 33-test suite currently verifies:
 - same-thread follow-up recall;
 - cross-thread preferred-name recall through long-term memory;
 - conversation/message persistence after reopening the database;
+- separation of conversations, messages, durable facts, and searches between two anonymous
+  browser owners sharing the same database;
+- safe migration of the previous unscoped schema without exposing legacy records;
 - cascade deletion of a thread's messages;
 - explicit-name extraction;
 - cleared long-term memory remaining cleared after restart;
@@ -351,8 +366,11 @@ Model and search settings expander.
 - Long conversations are character-trimmed rather than token-counted or summarized.
 - DuckDuckGo/page extraction quality varies across sites; Tavily and SerpAPI are more
   consistent but need separate API keys.
-- The SQLite database is local and single-user; authentication and cloud synchronization are
-  outside the current assessment scope.
+- Anonymous identity normally persists only while the browser retains its Streamlit cookie.
+  Closing an incognito/private window or clearing cookies intentionally starts fresh memory.
+- Streamlit Community Cloud's local SQLite filesystem is not guaranteed durable across app
+  replacement or infrastructure restart; production-grade permanent storage would require a
+  hosted database, while browser-owner isolation still applies during the deployment lifetime.
 - There is no streaming-token UI yet; responses appear after completion.
 - Thread titles are derived from the first user message rather than generated semantically.
 - Jev is an optional external early-access service; automated tests mock its API, so a valid

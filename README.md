@@ -9,6 +9,7 @@
 | Capability | Included |
 |---|:---:|
 | ChatGPT-style persistent conversations | ✅ |
+| Automatic per-browser chat and memory isolation | ✅ |
 | OpenAI, DeepSeek, Gemini, Groq and custom LLMs | ✅ |
 | Optional TypeSafe Jev decision routing | ✅ |
 | Automatic fallback when Jev is unavailable | ✅ |
@@ -276,18 +277,24 @@ Then demonstrate:
 
 ```mermaid
 flowchart TB
-    DB[(SQLite)] --> T[Conversation threads]
-    DB --> F[Durable user facts]
-    DB --> H[Research history]
+    B[Browser cookie hashed into anonymous owner ID] --> DB[(SQLite)]
+    DB --> T[Owner's conversation threads]
+    DB --> F[Owner's durable user facts]
+    DB --> H[Owner's research history]
     T --> T1[Complete user and assistant messages]
     F --> F1[Explicit names, preferences and ongoing goals]
     H --> H1[Plans, reports, sources, model metadata and duration]
 ```
 
-- Thread messages are isolated by conversation.
-- Explicit durable facts may be reused across conversations.
+- A browser receives an anonymous identity automatically; the user never enters an ID.
+- Normal, private/incognito, other-browser and other-device sessions receive separate memory.
+- Only a one-way hash of the browser cookie is stored; the raw cookie is never persisted.
+- Thread messages are isolated by both anonymous owner and conversation.
+- Explicit durable facts may be reused across that owner's conversations only.
 - Secrets such as API keys and passwords are rejected from long-term fact memory.
 - Completed research remains available after an application restart.
+- Closing a private/incognito window normally removes its browser identity, so its earlier
+  anonymous memory will no longer be reachable from a later private window.
 
 ## Project structure
 

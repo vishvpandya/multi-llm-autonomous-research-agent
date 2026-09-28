@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import os
 import re
+import hashlib
+import uuid
 from typing import Any
 
 import streamlit as st
@@ -21,8 +23,24 @@ st.set_page_config(
 
 
 @st.cache_resource
-def get_memory() -> ResearchMemory:
-    return ResearchMemory(os.getenv("RESEARCH_DB_PATH", "data/research_history.db"))
+def get_memory(owner_id: str) -> ResearchMemory:
+    return ResearchMemory(
+        os.getenv("RESEARCH_DB_PATH", "data/research_history.db"),
+        owner_id=owner_id,
+    )
+
+
+def current_visitor_id() -> str:
+    """Return a stable, non-reversible ID for this browser when cookies are available."""
+    cookies = dict(st.context.cookies)
+    browser_cookie = cookies.get("_streamlit_xsrf") or cookies.get("ajs_anonymous_id")
+    if browser_cookie:
+        return hashlib.sha256(
+            f"anonymous-browser:{browser_cookie}".encode("utf-8")
+        ).hexdigest()
+    if "anonymous_visitor_id" not in st.session_state:
+        st.session_state["anonymous_visitor_id"] = uuid.uuid4().hex
+    return str(st.session_state["anonymous_visitor_id"])
 
 
 def filename_for(text: str) -> str:
@@ -148,7 +166,8 @@ def render_assistant_metadata(message: dict[str, Any]) -> None:
     st.caption(" • ".join(details))
 
 
-memory = get_memory()
+visitor_id = current_visitor_id()
+memory = get_memory(visitor_id)
 conversations = memory.list_conversations()
 active_id = st.session_state.get("active_conversation_id")
 if not active_id or memory.get_conversation(active_id) is None:
@@ -273,7 +292,10 @@ with st.sidebar:
     elif jev_enabled and not jev_key:
         st.info("No Jev key provided. LLM routing fallback remains active.")
 
-    st.caption("Threads and messages are saved locally in SQLite.")
+    st.caption(
+        "Chats and memory are private to this browser and saved in the app database. "
+        "A private window or another device starts with separate memory."
+    )
 
 active_conversation = memory.get_conversation(active_id)
 st.title("🔎 Multi-LLM Autonomous Research Agent")
